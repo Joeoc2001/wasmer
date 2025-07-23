@@ -49,6 +49,7 @@ pub enum CpuFeature {
     // ARM features
     NEON,
     // Risc-V features
+    F,
 }
 
 impl CpuFeature {
@@ -114,7 +115,27 @@ impl CpuFeature {
         features
     }
 
-    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
+    #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+    /// Retrieves the features for the current Host
+    pub fn for_host() -> EnumSet<Self> {
+        let mut features = EnumSet::new();
+
+        // TODO: This is nightly only at the moment
+        // If this were a real PR I'd use the `std_detect` lib manually, or look at bumping MSRV
+        //if std::arch::is_riscv_feature_detected!("f") {
+        //    features.insert(Self::F);
+        //}
+
+        features
+    }
+
+    #[cfg(not(any(
+        target_arch = "x86",
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "riscv32",
+        target_arch = "riscv64"
+    )))]
     /// Retrieves the features for the current Host
     pub fn for_host() -> EnumSet<Self> {
         // We default to an empty hash set
@@ -154,6 +175,7 @@ impl FromStr for CpuFeature {
             "avx512f" => Ok(Self::AVX512F),
             "lzcnt" => Ok(Self::LZCNT),
             "neon" => Ok(Self::NEON),
+            "f" => Ok(Self::F),
             _ => Err(ParseCpuFeatureError::Missing(s.to_string())),
         }
     }
@@ -180,6 +202,7 @@ impl std::fmt::Display for CpuFeature {
                 Self::AVX512F => "avx512f",
                 Self::LZCNT => "lzcnt",
                 Self::NEON => "neon",
+                Self::F => "f",
             }
         )
     }

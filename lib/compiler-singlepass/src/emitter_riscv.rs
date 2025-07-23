@@ -36,17 +36,35 @@ pub enum Condition {
 /// Emitter trait for RISC-V.
 #[allow(unused)]
 pub trait EmitterRiscv {
-    /// Returns the SIMD (FPU) feature if available.
+    /*/// Returns the SIMD (FPU) feature if available.
     fn get_simd_arch(&self) -> Option<&CpuFeature>;
-    /// Generates a new internal label.
-    fn get_label(&mut self) -> Label;
-    /// Gets the current code offset.
-    fn get_offset(&self) -> Offset;
     /// Returns the size of a jump instruction in bytes.
     fn get_jmp_instr_size(&self) -> u8;
 
     /// Finalize the function, e.g., resolve labels.
     fn finalize_function(&mut self) -> Result<(), CompileError>;
 
-    // TODO: add methods for emitting RISC-V instructions (e.g., loads, stores, arithmetic, branches, etc.)
+    // TODO: add methods for emitting RISC-V instructions (e.g., loads, stores, arithmetic, branches, etc.)*/
+
+    /// Generates a new internal label.
+    fn get_label(&mut self) -> Label;
+    /// Gets the current code offset.
+    fn get_offset(&self) -> Offset;
+
+    fn emit_label(&mut self, label: Label) -> Result<(), CompileError>;
+}
+
+impl EmitterRiscv for AssemblerRiscv {
+    fn get_offset(&self) -> AssemblyOffset {
+        self.offset()
+    }
+
+    fn get_label(&mut self) -> DynamicLabel {
+        self.new_dynamic_label()
+    }
+
+    fn emit_label(&mut self, label: Label) -> Result<(), CompileError> {
+        dynasm!(self ; => label);
+        Ok(())
+    }
 }

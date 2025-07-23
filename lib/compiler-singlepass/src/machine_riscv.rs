@@ -100,7 +100,7 @@ fn dwarf_index(reg: u16) -> gimli::Register {
 
 /// The RISC-V machine state and code emitter.
 pub struct MachineRiscv {
-    assembler: Assembler,
+    assembler: AssemblerRiscv,
     used_gprs: u32,
     used_simd: u32,
     trap_table: TrapTable,
@@ -117,13 +117,13 @@ pub struct MachineRiscv {
 
 impl MachineRiscv {
     /// Creates a new RISC-V machine for code generation.
-    pub fn new(target: Option<Target>) -> Self {
+    pub fn new(target: Option<Target>) -> Result<Self, CompileError> {
         let has_fpu = match target {
-            Some(ref t) => t.cpu_features().contains(CpuFeature::NEON), // TODO: replace with RISC-V FPU feature
+            Some(ref t) => t.cpu_features().contains(CpuFeature::F),
             None => false,
         };
-        MachineRiscv {
-            assembler: Assembler::new(0),
+        Ok(MachineRiscv {
+            assembler: AssemblerRiscv::new(0, target)?,
             used_gprs: 0,
             used_simd: 0,
             trap_table: TrapTable::default(),
@@ -131,7 +131,7 @@ impl MachineRiscv {
             src_loc: 0,
             unwind_ops: vec![],
             has_fpu,
-        }
+        })
     }
 }
 
@@ -150,7 +150,7 @@ impl Machine for MachineRiscv {
     type GPR = GPR;
     type SIMD = FPR;
     fn assembler_get_offset(&self) -> Offset {
-        todo!()
+        self.assembler.get_offset()
     }
     fn index_from_gpr(&self, x: Self::GPR) -> RegisterIndex {
         todo!()
@@ -234,10 +234,18 @@ impl Machine for MachineRiscv {
         todo!()
     }
     fn collect_trap_information(&self) -> Vec<TrapInformation> {
-        todo!()
+        self.trap_table
+            .offset_to_code
+            .clone()
+            .into_iter()
+            .map(|(offset, code)| TrapInformation {
+                code_offset: offset as u32,
+                trap_code: code,
+            })
+            .collect()
     }
     fn instructions_address_map(&self) -> Vec<InstructionAddressMap> {
-        todo!()
+        self.instructions_address_map.clone()
     }
     fn local_on_stack(&mut self, stack_offset: i32) -> Location {
         todo!()
@@ -342,16 +350,19 @@ impl Machine for MachineRiscv {
         todo!()
     }
     fn new_machine_state(&self) -> MachineState {
-        todo!()
+        new_machine_state()
     }
     fn assembler_finalize(self) -> Result<Vec<u8>, CompileError> {
-        todo!()
+        self.assembler.finalize().map_err(|e| {
+            CompileError::Codegen(format!("Assembler failed finalization with: {e:?}"))
+        })
     }
     fn get_offset(&self) -> Offset {
         todo!()
     }
     fn finalize_function(&mut self) -> Result<(), CompileError> {
-        todo!()
+        //todo!()
+        Ok(())
     }
     fn emit_function_prolog(&mut self) -> Result<(), CompileError> {
         todo!()
@@ -382,13 +393,14 @@ impl Machine for MachineRiscv {
         todo!()
     }
     fn emit_illegal_op(&mut self, trp: TrapCode) -> Result<(), CompileError> {
-        todo!()
+        //todo!()
+        Ok(())
     }
     fn get_label(&mut self) -> Label {
-        todo!()
+        self.assembler.new_dynamic_label()
     }
     fn emit_label(&mut self, label: Label) -> Result<(), CompileError> {
-        todo!()
+        self.assembler.emit_label(label)
     }
     fn get_grp_for_call(&self) -> Self::GPR {
         todo!()
@@ -2516,7 +2528,113 @@ impl Machine for MachineRiscv {
         sig: &FunctionType,
         calling_convention: CallingConvention,
     ) -> Result<FunctionBody, CompileError> {
-        todo!()
+        // the cpu feature here is irrelevant
+        let mut a = AssemblerRiscv::new(0, None)?;
+
+        // Calculate stack offset.
+        let mut stack_offset: u32 = 0;
+        for (i, _param) in sig.params().iter().enumerate() {
+            if let Location::Memory(_, _) =
+                self.get_simple_param_location(1 + i, calling_convention)
+            {
+                stack_offset += 8;
+            }
+        }
+        let stack_padding: u32 = match calling_convention {
+            CallingConvention::WindowsFastcall => 32,
+            _ => 0,
+        };
+
+        // Align to 16 bytes. We push two 8-byte registers below, so here we need to ensure stack_offset % 16 == 8.
+        if stack_offset % 16 != 8 {
+            stack_offset += 8;
+        }
+
+        // Used callee-saved registers
+        a.emit_push(Size::S64, Location::GPR(GPR::R15))?;
+        a.emit_push(Size::S64, Location::GPR(GPR::R14))?;
+
+        // Prepare stack space.
+        a.emit_sub(
+            Size::S64,
+            Location::Imm32(stack_offset + stack_padding),
+            Location::GPR(GPR::RSP),
+        )?;
+
+        // Arguments
+        a.emit_mov(
+            Size::S64,
+            self.get_simple_param_location(1, calling_convention),
+            Location::GPR(GPR::R15),
+        )?; // func_ptr
+        a.emit_mov(
+            Size::S64,
+            self.get_simple_param_location(2, calling_convention),
+            Location::GPR(GPR::R14),
+        )?; // args_rets
+
+        // Move arguments to their locations.
+        // `callee_vmctx` is already in the first argument register, so no need to move.
+        {
+            let mut n_stack_args: usize = 0;
+            for (i, _param) in sig.params().iter().enumerate() {
+                let src_loc = Location::Memory(GPR::R14, (i * 16) as _); // args_rets[i]
+                let dst_loc = self.get_simple_param_location(1 + i, calling_convention);
+
+                match dst_loc {
+                    Location::GPR(_) => {
+                        a.emit_mov(Size::S64, src_loc, dst_loc)?;
+                    }
+                    Location::Memory(_, _) => {
+                        // This location is for reading arguments but we are writing arguments here.
+                        // So recalculate it.
+                        a.emit_mov(Size::S64, src_loc, Location::GPR(GPR::RAX))?;
+                        a.emit_mov(
+                            Size::S64,
+                            Location::GPR(GPR::RAX),
+                            Location::Memory(
+                                GPR::RSP,
+                                (stack_padding as usize + n_stack_args * 8) as _,
+                            ),
+                        )?;
+                        n_stack_args += 1;
+                    }
+                    _ => codegen_error!("singlepass gen_std_trampoline unreachable"),
+                }
+            }
+        }
+
+        // Call.
+        a.emit_call_location(Location::GPR(GPR::R15))?;
+
+        // Restore stack.
+        a.emit_add(
+            Size::S64,
+            Location::Imm32(stack_offset + stack_padding),
+            Location::GPR(GPR::RSP),
+        )?;
+
+        // Write return value.
+        if !sig.results().is_empty() {
+            a.emit_mov(
+                Size::S64,
+                Location::GPR(GPR::RAX),
+                Location::Memory(GPR::R14, 0),
+            )?;
+        }
+
+        // Restore callee-saved registers.
+        a.emit_pop(Size::S64, Location::GPR(GPR::R14))?;
+        a.emit_pop(Size::S64, Location::GPR(GPR::R15))?;
+
+        a.emit_ret()?;
+
+        let mut body = a.finalize().unwrap();
+        body.shrink_to_fit();
+        Ok(FunctionBody {
+            body,
+            unwind_info: None,
+        })
     }
     fn gen_std_dynamic_import_trampoline(
         &self,
@@ -2536,9 +2654,9 @@ impl Machine for MachineRiscv {
         todo!()
     }
     fn gen_dwarf_unwind_info(&mut self, code_len: usize) -> Option<UnwindInstructions> {
-        todo!()
+        None
     }
     fn gen_windows_unwind_info(&mut self, code_len: usize) -> Option<Vec<u8>> {
-        todo!()
+        None
     }
 }

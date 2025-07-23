@@ -1190,7 +1190,7 @@ impl<'a, M: Machine> FuncGen<'a, M> {
             special_labels,
             calling_convention,
         };
-        fg.emit_head()?;
+        //fg.emit_head()?;
         Ok(fg)
     }
 
