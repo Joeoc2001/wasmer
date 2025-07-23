@@ -10,6 +10,7 @@
 
 #![allow(clippy::unnecessary_cast)]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![allow(unused)]
 
 mod address_map;
 mod arm64_decl;

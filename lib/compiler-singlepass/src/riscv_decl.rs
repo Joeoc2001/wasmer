@@ -44,6 +44,8 @@ pub enum GPR {
     T3,
     T4,
     T5,
+    // NB: we use T6 extensively when emitting pseudo-instructions in `emitter_riscv`.
+    // You should not use `T6` within `machine_risc`
     T6,
 }
 
@@ -74,9 +76,10 @@ impl AbstractReg for GPR {
         )
     }
     fn is_reserved(self) -> bool {
+        // We pseudo-reserve T6 for ourselves for a cleaner emitter/machine abstraction.
         matches!(
             self,
-            Self::Zero | Self::Ra | Self::Sp | Self::Gp | Self::Tp | Self::Fp
+            Self::Zero | Self::Ra | Self::Sp | Self::Gp | Self::Tp | Self::Fp | Self::T6
         )
     }
     fn into_index(self) -> usize {

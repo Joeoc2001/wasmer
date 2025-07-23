@@ -52,6 +52,16 @@ pub trait EmitterRiscv {
     fn get_offset(&self) -> Offset;
 
     fn emit_label(&mut self, label: Label) -> Result<(), CompileError>;
+    fn emit_ret(&mut self) -> Result<(), CompileError>;
+    fn emit_add(
+        &mut self,
+        sz: Size,
+        src: GPR,
+        value: Location,
+        dst: GPR,
+    ) -> Result<(), CompileError>;
+    fn emit_mov(&mut self, sz: Size, src: Location, dst: Location) -> Result<(), CompileError>;
+    fn emit_call_location(&mut self, loc: GPR) -> Result<(), CompileError>;
 }
 
 impl EmitterRiscv for AssemblerRiscv {
@@ -65,6 +75,146 @@ impl EmitterRiscv for AssemblerRiscv {
 
     fn emit_label(&mut self, label: Label) -> Result<(), CompileError> {
         dynasm!(self ; => label);
+        Ok(())
+    }
+
+    fn emit_ret(&mut self) -> Result<(), CompileError> {
+        dynasm!(self ; ret);
+        Ok(())
+    }
+
+    fn emit_add(
+        &mut self,
+        sz: Size,
+        src: GPR,
+        value: Location,
+        dst: GPR,
+    ) -> Result<(), CompileError> {
+        fn emit_addi(
+            a: &mut AssemblerRiscv,
+            sz: Size,
+            src: GPR,
+            imm: i64,
+            dst: GPR,
+        ) -> Result<(), CompileError> {
+            // Fast path
+            if imm == 0 {
+                return Ok(());
+            }
+
+            if imm >= -2048 && imm < 2047 {
+                // Single instr path
+                let imm = imm as i32;
+                match sz {
+                    Size::S32 => dynasm!(a ; addiw X(dst as u8), X(src as u8), imm),
+                    Size::S64 => dynasm!(a ; addi X(dst as u8), X(src as u8), imm),
+                    _ => codegen_error!("singlepass can't emit ADDI with size {:?}", sz,),
+                }
+            } else {
+                dynasm!(a ; li X(GPR::T6 as u8), imm);
+                match sz {
+                    Size::S32 => dynasm!(a ; addw X(dst as u8), X(src as u8), X(GPR::T6 as u8)),
+                    Size::S64 => dynasm!(a ; add X(dst as u8), X(src as u8), X(GPR::T6 as u8)),
+                    _ => codegen_error!("singlepass can't emit ADDI with size {:?}", sz,),
+                }
+            }
+
+            Ok(())
+        }
+
+        match value {
+            AbstractLocation::Imm32(imm) => emit_addi(self, sz, src, imm as i32 as i64, dst)?,
+            AbstractLocation::Imm64(imm) => emit_addi(self, sz, src, imm as i64, dst)?,
+            AbstractLocation::GPR(gpr) => match sz {
+                Size::S32 => dynasm!(self ; addw X(dst as u8), X(src as u8), X(gpr as u8)),
+                Size::S64 => dynasm!(self ; add X(dst as u8), X(src as u8), X(gpr as u8)),
+                _ => codegen_error!("singlepass can't emit ADD GPRs with size {:?}", sz,),
+            },
+            _ => codegen_error!(
+                "singlepass can't emit ADD {:?} {:?} {:?} {:?}",
+                sz,
+                src,
+                value,
+                dst
+            ),
+        }
+
+        Ok(())
+    }
+
+    fn emit_mov(&mut self, sz: Size, src: Location, dst: Location) -> Result<(), CompileError> {
+        if src == dst {
+            return Ok(());
+        }
+
+        match (sz, src, dst) {
+            // GPR -> GPR
+            (Size::S32, Location::GPR(src), Location::GPR(dst)) => {
+                dynasm!(self ; addw X(dst as u8), X(src as u8), x0);
+            }
+            (Size::S64, Location::GPR(src), Location::GPR(dst)) => {
+                dynasm!(self ; mv X(dst as u8), X(src as u8));
+            }
+            // Immediate -> GPR
+            (Size::S32, Location::Imm32(imm), Location::GPR(dst)) => {
+                let imm = (imm as i32) as i64;
+                dynasm!(self ; li X(dst as u8), imm);
+            }
+            (Size::S64, Location::Imm32(imm), Location::GPR(dst)) => {
+                let imm = (imm as i32) as i64;
+                dynasm!(self ; li X(dst as u8), imm);
+            }
+            (Size::S32, Location::Imm64(imm), Location::GPR(dst)) => {
+                let imm = imm as i64 as i32 as i64;
+                dynasm!(self ; li X(dst as u8), imm);
+            }
+            (Size::S64, Location::Imm64(imm), Location::GPR(dst)) => {
+                let imm = imm as i64;
+                dynasm!(self ; li X(dst as u8), imm);
+            }
+            // Immediate -> Memory
+            (Size::S32, Location::Imm32(imm), Location::Memory(dst, offset)) => {
+                let imm = (imm as i32) as i64;
+                dynasm!(self ; li X(GPR::T6 as u8), imm);
+                dynasm!(self ; sw X(GPR::T6 as u8), [X(dst as u8), offset]);
+            }
+            (Size::S64, Location::Imm32(imm), Location::Memory(dst, offset)) => {
+                let imm = (imm as i32) as i64;
+                dynasm!(self ; li X(GPR::T6 as u8), imm);
+                dynasm!(self ; sd X(GPR::T6 as u8), [X(dst as u8), offset]);
+            }
+            (Size::S32, Location::Imm64(imm), Location::Memory(dst, offset)) => {
+                let imm = imm as i64 as i32 as i64;
+                dynasm!(self ; li X(GPR::T6 as u8), imm);
+                dynasm!(self ; sw X(GPR::T6 as u8), [X(dst as u8), offset]);
+            }
+            (Size::S64, Location::Imm64(imm), Location::Memory(dst, offset)) => {
+                let imm = imm as i64;
+                dynasm!(self ; li X(GPR::T6 as u8), imm);
+                dynasm!(self ; sd X(GPR::T6 as u8), [X(dst as u8), offset]);
+            }
+            // GPR -> Memory
+            (Size::S32, Location::GPR(src), Location::Memory(dst, offset)) => {
+                dynasm!(self ; sw X(src as u8), [X(dst as u8), offset]);
+            }
+            (Size::S64, Location::GPR(src), Location::Memory(dst, offset)) => {
+                dynasm!(self ; sd X(src as u8), [X(dst as u8), offset]);
+            }
+            // Memory -> GPR
+            (Size::S32, Location::Memory(src, offset), Location::GPR(dst)) => {
+                dynasm!(self ; lw X(dst as u8), [X(src as u8), offset]);
+            }
+            (Size::S64, Location::Memory(src, offset), Location::GPR(dst)) => {
+                dynasm!(self ; ld X(dst as u8), [X(src as u8), offset]);
+            }
+            _ => codegen_error!("singlepass can't emit MOV {:?} {:?} {:?}", sz, src, dst),
+        }
+
+        Ok(())
+    }
+
+    fn emit_call_location(&mut self, loc: GPR) -> Result<(), CompileError> {
+        dynasm!(self ; jalr x1, X(loc as u8), 0);
         Ok(())
     }
 }

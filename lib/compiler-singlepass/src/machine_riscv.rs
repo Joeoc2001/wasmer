@@ -303,12 +303,23 @@ impl Machine for MachineRiscv {
     ) -> Location {
         todo!()
     }
+    // TODO: Floats go in float registers
     fn get_simple_param_location(
         &self,
         idx: usize,
-        calling_convention: CallingConvention,
+        _calling_convention: CallingConvention,
     ) -> Location {
-        todo!()
+        match idx {
+            0 => Location::GPR(GPR::A0),
+            1 => Location::GPR(GPR::A1),
+            2 => Location::GPR(GPR::A2),
+            3 => Location::GPR(GPR::A3),
+            4 => Location::GPR(GPR::A4),
+            5 => Location::GPR(GPR::A5),
+            6 => Location::GPR(GPR::A6),
+            7 => Location::GPR(GPR::A7),
+            _ => Location::Memory(GPR::Sp, ((idx - 8) * 8) as i32),
+        }
     }
     fn move_location(
         &mut self,
@@ -352,7 +363,11 @@ impl Machine for MachineRiscv {
     fn new_machine_state(&self) -> MachineState {
         new_machine_state()
     }
-    fn assembler_finalize(self) -> Result<Vec<u8>, CompileError> {
+    fn assembler_finalize(mut self) -> Result<Vec<u8>, CompileError> {
+        self.assembler
+            .emit_add(Size::S32, GPR::A1, Location::GPR(GPR::A2), GPR::A0)?;
+        self.assembler.emit_ret()?;
+
         self.assembler.finalize().map_err(|e| {
             CompileError::Codegen(format!("Assembler failed finalization with: {e:?}"))
         })
@@ -2540,92 +2555,75 @@ impl Machine for MachineRiscv {
                 stack_offset += 8;
             }
         }
-        let stack_padding: u32 = match calling_convention {
-            CallingConvention::WindowsFastcall => 32,
-            _ => 0,
-        };
-
-        // Align to 16 bytes. We push two 8-byte registers below, so here we need to ensure stack_offset % 16 == 8.
-        if stack_offset % 16 != 8 {
-            stack_offset += 8;
-        }
 
         // Used callee-saved registers
-        a.emit_push(Size::S64, Location::GPR(GPR::R15))?;
-        a.emit_push(Size::S64, Location::GPR(GPR::R14))?;
-
-        // Prepare stack space.
-        a.emit_sub(
+        stack_offset += 8;
+        a.emit_mov(
             Size::S64,
-            Location::Imm32(stack_offset + stack_padding),
-            Location::GPR(GPR::RSP),
+            Location::GPR(GPR::S1),
+            Location::Memory(GPR::Sp, -8),
         )?;
 
-        // Arguments
+        // Prepare stack space.
+        // Align to 16 bytes.
+        if stack_offset % 16 == 8 {
+            stack_offset += 8;
+        }
+        a.emit_add(
+            Size::S64,
+            GPR::Sp,
+            Location::Imm32(-(stack_offset as i32) as u32),
+            GPR::Sp,
+        )?;
+
+        // Move arguments to their locations.
+
+        // func_ptr
         a.emit_mov(
             Size::S64,
             self.get_simple_param_location(1, calling_convention),
-            Location::GPR(GPR::R15),
-        )?; // func_ptr
+            Location::GPR(GPR::T0),
+        )?;
+        // args_rets
         a.emit_mov(
             Size::S64,
             self.get_simple_param_location(2, calling_convention),
-            Location::GPR(GPR::R14),
-        )?; // args_rets
+            Location::GPR(GPR::S1),
+        )?;
 
-        // Move arguments to their locations.
         // `callee_vmctx` is already in the first argument register, so no need to move.
         {
             let mut n_stack_args: usize = 0;
             for (i, _param) in sig.params().iter().enumerate() {
-                let src_loc = Location::Memory(GPR::R14, (i * 16) as _); // args_rets[i]
+                let src_loc = Location::Memory(GPR::S1, (i * 16) as _); // args_rets[i]
                 let dst_loc = self.get_simple_param_location(1 + i, calling_convention);
 
-                match dst_loc {
-                    Location::GPR(_) => {
-                        a.emit_mov(Size::S64, src_loc, dst_loc)?;
-                    }
-                    Location::Memory(_, _) => {
-                        // This location is for reading arguments but we are writing arguments here.
-                        // So recalculate it.
-                        a.emit_mov(Size::S64, src_loc, Location::GPR(GPR::RAX))?;
-                        a.emit_mov(
-                            Size::S64,
-                            Location::GPR(GPR::RAX),
-                            Location::Memory(
-                                GPR::RSP,
-                                (stack_padding as usize + n_stack_args * 8) as _,
-                            ),
-                        )?;
-                        n_stack_args += 1;
-                    }
-                    _ => codegen_error!("singlepass gen_std_trampoline unreachable"),
-                }
+                a.emit_mov(Size::S64, src_loc, dst_loc)?;
             }
         }
 
-        // Call.
-        a.emit_call_location(Location::GPR(GPR::R15))?;
+        // Call
+        //a.emit_call_location(GPR::T0)?;
+        a.emit_add(Size::S64, GPR::A1, Location::GPR(GPR::A2), GPR::A0)?;
 
-        // Restore stack.
-        a.emit_add(
-            Size::S64,
-            Location::Imm32(stack_offset + stack_padding),
-            Location::GPR(GPR::RSP),
-        )?;
+        // Restore stack
+        a.emit_add(Size::S64, GPR::Sp, Location::Imm32(stack_offset), GPR::Sp)?;
 
-        // Write return value.
+        // Write return value
         if !sig.results().is_empty() {
             a.emit_mov(
                 Size::S64,
-                Location::GPR(GPR::RAX),
-                Location::Memory(GPR::R14, 0),
+                Location::GPR(GPR::A0),
+                Location::Memory(GPR::S1, 0),
             )?;
         }
 
-        // Restore callee-saved registers.
-        a.emit_pop(Size::S64, Location::GPR(GPR::R14))?;
-        a.emit_pop(Size::S64, Location::GPR(GPR::R15))?;
+        // Restore saved registers
+        a.emit_mov(
+            Size::S64,
+            Location::Memory(GPR::Sp, -8),
+            Location::GPR(GPR::S1),
+        )?;
 
         a.emit_ret()?;
 

@@ -49,9 +49,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Option 2
     let sum_typed: TypedFunction<(i32, i32), i32> = sum.typed(&mut store)?;
     println!("Calling `sum` function (natively)...");
-    let result = sum_typed.call(&mut store, 1, 2)?;
+    let result = sum_typed.call(&mut store, 4, 5)?;
     println!("Results: {:?}", result);
-    assert_eq!(result, 3);
+    assert_eq!(result, 9);
 
     Ok(())
 }
