@@ -62,6 +62,7 @@ pub trait EmitterRiscv {
     ) -> Result<(), CompileError>;
     fn emit_mov(&mut self, sz: Size, src: Location, dst: Location) -> Result<(), CompileError>;
     fn emit_call_location(&mut self, loc: GPR) -> Result<(), CompileError>;
+    fn emit_break(&mut self) -> Result<(), CompileError>;
 }
 
 impl EmitterRiscv for AssemblerRiscv {
@@ -215,6 +216,11 @@ impl EmitterRiscv for AssemblerRiscv {
 
     fn emit_call_location(&mut self, loc: GPR) -> Result<(), CompileError> {
         dynasm!(self ; jalr x1, X(loc as u8), 0);
+        Ok(())
+    }
+
+    fn emit_break(&mut self) -> Result<(), CompileError> {
+        dynasm!(self ; ebreak);
         Ok(())
     }
 }

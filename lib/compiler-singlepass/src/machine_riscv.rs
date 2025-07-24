@@ -2556,12 +2556,17 @@ impl Machine for MachineRiscv {
             }
         }
 
-        // Used callee-saved registers
-        stack_offset += 8;
+        // Used caller/callee-saved registers
+        stack_offset += 8 * 2;
         a.emit_mov(
             Size::S64,
             Location::GPR(GPR::S1),
             Location::Memory(GPR::Sp, -8),
+        )?;
+        a.emit_mov(
+            Size::S64,
+            Location::GPR(GPR::Ra),
+            Location::Memory(GPR::Sp, -16),
         )?;
 
         // Prepare stack space.
@@ -2603,8 +2608,9 @@ impl Machine for MachineRiscv {
         }
 
         // Call
-        //a.emit_call_location(GPR::T0)?;
-        a.emit_add(Size::S64, GPR::A1, Location::GPR(GPR::A2), GPR::A0)?;
+        //a.emit_break();
+        a.emit_call_location(GPR::T0)?;
+        //a.emit_add(Size::S64, GPR::A1, Location::GPR(GPR::A2), GPR::A0)?;
 
         // Restore stack
         a.emit_add(Size::S64, GPR::Sp, Location::Imm32(stack_offset), GPR::Sp)?;
@@ -2623,6 +2629,11 @@ impl Machine for MachineRiscv {
             Size::S64,
             Location::Memory(GPR::Sp, -8),
             Location::GPR(GPR::S1),
+        )?;
+        a.emit_mov(
+            Size::S64,
+            Location::Memory(GPR::Sp, -16),
+            Location::GPR(GPR::Ra),
         )?;
 
         a.emit_ret()?;
