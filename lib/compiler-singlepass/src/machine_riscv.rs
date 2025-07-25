@@ -143,7 +143,17 @@ enum ImmType {
 
 #[allow(dead_code)]
 impl MachineRiscv {
-    // TODO: helper functions for RISC-V immediates and addressing.
+    fn used_gprs_contains(&self, r: &GPR) -> bool {
+        self.used_gprs & (1 << r.into_index()) != 0
+    }
+    fn used_gprs_insert(&mut self, r: GPR) {
+        self.used_gprs |= 1 << r.into_index();
+    }
+    fn used_gprs_remove(&mut self, r: &GPR) -> bool {
+        let ret = self.used_gprs_contains(r);
+        self.used_gprs &= !(1 << r.into_index());
+        ret
+    }
 }
 
 impl Machine for MachineRiscv {
@@ -159,31 +169,54 @@ impl Machine for MachineRiscv {
         todo!()
     }
     fn get_vmctx_reg(&self) -> Self::GPR {
-        GPR::S9
+        GPR::S1
     }
     fn pick_gpr(&self) -> Option<Self::GPR> {
-        todo!()
+        static REGS: &[GPR] = &[GPR::S6, GPR::S7, GPR::S8, GPR::S9, GPR::S10, GPR::S11];
+        for r in REGS {
+            if !self.used_gprs_contains(r) {
+                return Some(*r);
+            }
+        }
+        None
     }
-    fn pick_temp_gpr(&self) -> Option<Self::GPR> {
-        todo!()
+    fn pick_temp_gpr(&self) -> Option<GPR> {
+        static REGS: &[GPR] = &[GPR::T0, GPR::T1, GPR::T2, GPR::T3, GPR::T4];
+        for r in REGS {
+            if !self.used_gprs_contains(r) {
+                return Some(*r);
+            }
+        }
+        None
     }
+
+    fn acquire_temp_gpr(&mut self) -> Option<GPR> {
+        let gpr = self.pick_temp_gpr();
+        if let Some(x) = gpr {
+            self.used_gprs_insert(x);
+        }
+        gpr
+    }
+
     fn get_used_gprs(&self) -> Vec<Self::GPR> {
-        todo!()
+        GPR::iterator()
+            .filter(|x| self.used_gprs & (1 << x.into_index()) != 0)
+            .cloned()
+            .collect()
     }
     fn get_used_simd(&self) -> Vec<Self::SIMD> {
         todo!()
     }
-    fn acquire_temp_gpr(&mut self) -> Option<Self::GPR> {
-        todo!()
-    }
     fn release_gpr(&mut self, gpr: Self::GPR) {
-        todo!()
+        assert!(self.used_gprs_remove(&gpr));
     }
     fn reserve_unused_temp_gpr(&mut self, gpr: Self::GPR) -> Self::GPR {
-        todo!()
+        assert!(!self.used_gprs_contains(&gpr));
+        self.used_gprs_insert(gpr);
+        gpr
     }
     fn reserve_gpr(&mut self, gpr: Self::GPR) {
-        todo!()
+        self.used_gprs_insert(gpr);
     }
     fn push_used_gpr(&mut self, grps: &[Self::GPR]) -> Result<usize, CompileError> {
         todo!()
@@ -219,7 +252,7 @@ impl Machine for MachineRiscv {
         }
     }
     fn set_srcloc(&mut self, offset: u32) {
-        todo!()
+        self.src_loc = offset;
     }
     fn mark_address_range_with_trap_code(&mut self, code: TrapCode, begin: usize, end: usize) {
         todo!()
@@ -231,10 +264,18 @@ impl Machine for MachineRiscv {
         todo!()
     }
     fn mark_instruction_address_end(&mut self, begin: usize) {
-        todo!()
+        self.instructions_address_map.push(InstructionAddressMap {
+            srcloc: SourceLoc::new(self.src_loc),
+            code_offset: begin,
+            code_len: self.assembler.get_offset().0 - begin,
+        });
     }
     fn insert_stackoverflow(&mut self) {
-        todo!()
+        let offset = 0;
+        self.trap_table
+            .offset_to_code
+            .insert(offset, TrapCode::StackOverflow);
+        self.mark_instruction_address_end(offset);
     }
     fn collect_trap_information(&self) -> Vec<TrapInformation> {
         self.trap_table
@@ -256,18 +297,18 @@ impl Machine for MachineRiscv {
     fn adjust_stack(&mut self, delta_stack_offset: u32) -> Result<(), CompileError> {
         self.assembler.emit_add(
             Size::S64,
-            GPR::Sp,
+            Location::GPR(GPR::Sp),
             Location::Imm32(-(delta_stack_offset as i32) as u32),
-            GPR::Sp,
+            Location::GPR(GPR::Sp),
         );
         Ok(())
     }
     fn restore_stack(&mut self, delta_stack_offset: u32) -> Result<(), CompileError> {
         self.assembler.emit_add(
             Size::S64,
-            GPR::Sp,
+            Location::GPR(GPR::Sp),
             Location::Imm32(delta_stack_offset),
-            GPR::Sp,
+            Location::GPR(GPR::Sp),
         );
         Ok(())
     }
@@ -298,20 +339,16 @@ impl Machine for MachineRiscv {
     fn get_local_location(&self, idx: usize, callee_saved_regs_size: usize) -> Location {
         // Use callee-saved registers for the first locals.
         match idx {
-            0 => Location::GPR(GPR::S1),
-            1 => Location::GPR(GPR::S2),
-            2 => Location::GPR(GPR::S3),
-            3 => Location::GPR(GPR::S4),
-            4 => Location::GPR(GPR::S5),
-            5 => Location::GPR(GPR::S6),
-            6 => Location::GPR(GPR::S7),
-            7 => Location::GPR(GPR::S8),
-            _ => Location::Memory(GPR::Fp, -(((idx - 7) * 8 + callee_saved_regs_size) as i32)),
+            0 => Location::GPR(GPR::S2),
+            1 => Location::GPR(GPR::S3),
+            2 => Location::GPR(GPR::S4),
+            3 => Location::GPR(GPR::S5),
+            _ => Location::Memory(GPR::Fp, -(((idx - 3) * 8 + callee_saved_regs_size) as i32)),
         }
     }
 
     fn move_local(&mut self, stack_offset: i32, location: Location) -> Result<(), CompileError> {
-        self.assembler.emit_mov(
+        self.assembler.emit_movzx(
             Size::S64,
             location,
             Location::Memory(GPR::Sp, -stack_offset),
@@ -363,18 +400,57 @@ impl Machine for MachineRiscv {
         source: Location,
         dest: Location,
     ) -> Result<(), CompileError> {
-        todo!()
+        self.assembler.emit_movzx(size, source, dest)
     }
     fn move_location_extend(
         &mut self,
-        size_val: Size,
+        src_sz: Size,
         signed: bool,
         source: Location,
-        size_op: Size,
+        dst_sz: Size,
         dest: Location,
     ) -> Result<(), CompileError> {
-        todo!()
+        if dst_sz != Size::S64 {
+            codegen_error!("singlepass move_location_extend unreachable");
+        }
+
+        let dst = match dest {
+            Location::Memory(_, _) | Location::Memory2(_, _, _, _) => {
+                self.acquire_temp_gpr().ok_or_else(|| {
+                    CompileError::Codegen("singlepass cannot acquire temp gpr".to_owned())
+                })?
+            }
+            Location::GPR(dst) => dst,
+            _ => codegen_error!("singlepass move_location_extend unimplemented dest {dest:?}"),
+        };
+
+        match source {
+            Location::GPR(_)
+            | Location::Memory(_, _)
+            | Location::Memory2(_, _, _, _)
+            | Location::Imm32(_)
+            | Location::Imm64(_) => match src_sz {
+                Size::S32 | Size::S64 => self.assembler.emit_movzx(src_sz, source, Location::GPR(dst)),
+                Size::S16 | Size::S8 => {
+                    if signed {
+                        self.assembler.emit_movsx(src_sz, source, Location::GPR(dst))
+                    } else {
+                        self.assembler.emit_movzx(src_sz, source, Location::GPR(dst))
+                    }
+                }
+            },
+            _ => panic!("unimplemented move_location_extend({src_sz:?}, {signed}, {source:?}, {dst_sz:?}, {dest:?}"),
+        }?;
+
+        if dest != Location::GPR(dst) {
+            self.assembler
+                .emit_movzx(dst_sz, Location::GPR(dst), dest)?;
+            self.release_gpr(dst);
+        }
+
+        Ok(())
     }
+
     fn load_address(
         &mut self,
         size: Size,
@@ -391,10 +467,24 @@ impl Machine for MachineRiscv {
         todo!()
     }
     fn restore_saved_area(&mut self, saved_area_offset: i32) -> Result<(), CompileError> {
-        todo!()
+        self.assembler.emit_add(
+            Size::S64,
+            Location::GPR(GPR::Fp),
+            Location::Imm32(-saved_area_offset as u32),
+            Location::GPR(GPR::Sp),
+        )
     }
     fn pop_location(&mut self, location: Location) -> Result<(), CompileError> {
-        todo!()
+        self.assembler
+            .emit_movzx(Size::S64, Location::Memory(GPR::Sp, 0), location)?;
+        self.assembler.emit_add(
+            Size::S64,
+            Location::GPR(GPR::Fp),
+            Location::Imm32(16),
+            Location::GPR(GPR::Sp),
+        )?;
+
+        Ok(())
     }
     fn new_machine_state(&self) -> MachineState {
         new_machine_state()
@@ -408,41 +498,56 @@ impl Machine for MachineRiscv {
         todo!()
     }
     fn finalize_function(&mut self) -> Result<(), CompileError> {
-        //todo!()
+        //self.assembler
+        //    .emit_add(Size::S32, GPR::A1, Location::GPR(GPR::A2), GPR::A0)?;
 
-        self.assembler
-            .emit_add(Size::S32, GPR::A1, Location::GPR(GPR::A2), GPR::A0)?;
-
-        self.assembler.emit_ret()?;
+        //self.assembler.emit_ret()?;
 
         Ok(())
     }
     fn emit_function_prolog(&mut self) -> Result<(), CompileError> {
-        // Fp to Mem and Sp to Fp
-        // TODO: This is wasteful by 8 bytes per frame
-        self.assembler
-            .emit_add(Size::S64, GPR::Sp, Location::Imm32(-16i32 as u32), GPR::Sp)?;
-        self.assembler.emit_mov(
+        // Fp->Mem, Sp->Fp, Ra->Mem
+        self.assembler.emit_add(
+            Size::S64,
+            Location::GPR(GPR::Sp),
+            Location::Imm32(-16i32 as u32),
+            Location::GPR(GPR::Sp),
+        )?;
+        self.assembler.emit_movzx(
             Size::S64,
             Location::GPR(GPR::Fp),
             Location::Memory(GPR::Sp, 0),
         );
+        self.assembler.emit_movzx(
+            Size::S64,
+            Location::GPR(GPR::Ra),
+            Location::Memory(GPR::Sp, 8),
+        )?;
         self.assembler
-            .emit_mov(Size::S64, Location::GPR(GPR::Sp), Location::GPR(GPR::Fp));
+            .emit_movzx(Size::S64, Location::GPR(GPR::Sp), Location::GPR(GPR::Fp));
 
         Ok(())
     }
     fn emit_function_epilog(&mut self) -> Result<(), CompileError> {
-        // Fp to Sp and Mem to Fp
+        // Fp->Sp, Mem->Fp, Mem->Ra
         self.assembler
-            .emit_mov(Size::S64, Location::GPR(GPR::Fp), Location::GPR(GPR::Sp));
-        self.assembler.emit_mov(
+            .emit_movzx(Size::S64, Location::GPR(GPR::Fp), Location::GPR(GPR::Sp));
+        self.assembler.emit_movzx(
             Size::S64,
             Location::Memory(GPR::Sp, 0),
             Location::GPR(GPR::Fp),
         );
-        self.assembler
-            .emit_add(Size::S64, GPR::Sp, Location::Imm32(16), GPR::Sp)?;
+        self.assembler.emit_movzx(
+            Size::S64,
+            Location::Memory(GPR::Sp, 8),
+            Location::GPR(GPR::Ra),
+        )?;
+        self.assembler.emit_add(
+            Size::S64,
+            Location::GPR(GPR::Sp),
+            Location::Imm32(16),
+            Location::GPR(GPR::Sp),
+        )?;
 
         Ok(())
     }
@@ -452,7 +557,19 @@ impl Machine for MachineRiscv {
         cannonicalize: bool,
         loc: Location,
     ) -> Result<(), CompileError> {
-        todo!()
+        if cannonicalize {
+            self.canonicalize_nan(
+                match ty {
+                    WpType::F32 => Size::S32,
+                    WpType::F64 => Size::S64,
+                    _ => codegen_error!("singlepass emit_function_return_value unreachable"),
+                },
+                loc,
+                Location::GPR(GPR::A0),
+            )
+        } else {
+            self.emit_relaxed_mov(Size::S64, loc, Location::GPR(GPR::A0))
+        }
     }
     fn emit_function_return_float(&mut self) -> Result<(), CompileError> {
         todo!()
@@ -615,7 +732,7 @@ impl Machine for MachineRiscv {
         todo!()
     }
     fn emit_ret(&mut self) -> Result<(), CompileError> {
-        todo!()
+        self.assembler.emit_ret()
     }
     fn emit_push(&mut self, size: Size, loc: Location) -> Result<(), CompileError> {
         todo!()
@@ -629,7 +746,7 @@ impl Machine for MachineRiscv {
         src: Location,
         dst: Location,
     ) -> Result<(), CompileError> {
-        todo!()
+        self.assembler.emit_movzx(sz, src, dst)
     }
     fn emit_relaxed_cmp(
         &mut self,
@@ -674,7 +791,7 @@ impl Machine for MachineRiscv {
         loc_b: Location,
         ret: Location,
     ) -> Result<(), CompileError> {
-        todo!()
+        self.assembler.emit_add(Size::S32, loc_a, loc_b, ret)
     }
     fn emit_binop_sub32(
         &mut self,
@@ -2617,14 +2734,16 @@ impl Machine for MachineRiscv {
             }
         }
 
-        // Used caller/callee-saved registers
+        // Used callee-saved registers
         stack_offset += 8 * 2;
-        a.emit_mov(
+        a.emit_movzx(
             Size::S64,
             Location::GPR(GPR::S1),
             Location::Memory(GPR::Sp, -8),
         )?;
-        a.emit_mov(
+        // Ra is not callee saved. but we want to retain it across the call boundary.
+        // We could move it to S2 or similar but then we'd have to push S2 here anyway, so this is faster.
+        a.emit_movzx(
             Size::S64,
             Location::GPR(GPR::Ra),
             Location::Memory(GPR::Sp, -16),
@@ -2637,21 +2756,21 @@ impl Machine for MachineRiscv {
         }
         a.emit_add(
             Size::S64,
-            GPR::Sp,
+            Location::GPR(GPR::Sp),
             Location::Imm32(-(stack_offset as i32) as u32),
-            GPR::Sp,
+            Location::GPR(GPR::Sp),
         )?;
 
         // Move arguments to their locations.
 
         // func_ptr
-        a.emit_mov(
+        a.emit_movzx(
             Size::S64,
             self.get_simple_param_location(1, calling_convention),
             Location::GPR(GPR::T0),
         )?;
         // args_rets
-        a.emit_mov(
+        a.emit_movzx(
             Size::S64,
             self.get_simple_param_location(2, calling_convention),
             Location::GPR(GPR::S1),
@@ -2661,7 +2780,7 @@ impl Machine for MachineRiscv {
             let src_loc = Location::Memory(GPR::S1, (i * 16) as _); // args_rets[i]
             let dst_loc = self.get_simple_param_location(1 + i, calling_convention);
 
-            a.emit_mov(Size::S64, src_loc, dst_loc)?;
+            a.emit_movzx(Size::S64, src_loc, dst_loc)?;
         }
 
         // Call
@@ -2669,11 +2788,16 @@ impl Machine for MachineRiscv {
         a.emit_call_location(Location::GPR(GPR::T0))?;
 
         // Restore stack
-        a.emit_add(Size::S64, GPR::Sp, Location::Imm32(stack_offset), GPR::Sp)?;
+        a.emit_add(
+            Size::S64,
+            Location::GPR(GPR::Sp),
+            Location::Imm32(stack_offset),
+            Location::GPR(GPR::Sp),
+        )?;
 
         // Write return value
         if !sig.results().is_empty() {
-            a.emit_mov(
+            a.emit_movzx(
                 Size::S64,
                 Location::GPR(GPR::A0),
                 Location::Memory(GPR::S1, 0),
@@ -2681,12 +2805,12 @@ impl Machine for MachineRiscv {
         }
 
         // Restore saved registers
-        a.emit_mov(
+        a.emit_movzx(
             Size::S64,
             Location::Memory(GPR::Sp, -8),
             Location::GPR(GPR::S1),
         )?;
-        a.emit_mov(
+        a.emit_movzx(
             Size::S64,
             Location::Memory(GPR::Sp, -16),
             Location::GPR(GPR::Ra),
