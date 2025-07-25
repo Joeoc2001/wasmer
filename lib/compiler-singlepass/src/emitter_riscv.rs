@@ -61,7 +61,7 @@ pub trait EmitterRiscv {
         dst: GPR,
     ) -> Result<(), CompileError>;
     fn emit_mov(&mut self, sz: Size, src: Location, dst: Location) -> Result<(), CompileError>;
-    fn emit_call_location(&mut self, loc: GPR) -> Result<(), CompileError>;
+    fn emit_call_location(&mut self, loc: Location) -> Result<(), CompileError>;
     fn emit_break(&mut self) -> Result<(), CompileError>;
 }
 
@@ -214,8 +214,16 @@ impl EmitterRiscv for AssemblerRiscv {
         Ok(())
     }
 
-    fn emit_call_location(&mut self, loc: GPR) -> Result<(), CompileError> {
-        dynasm!(self ; jalr x1, X(loc as u8), 0);
+    fn emit_call_location(&mut self, loc: Location) -> Result<(), CompileError> {
+        let reg = match loc {
+            AbstractLocation::GPR(reg) => reg,
+            AbstractLocation::Memory(src, offset) => {
+                dynasm!(self ; ld X(GPR::T6 as u8), [X(src as u8), offset]);
+                GPR::T6
+            }
+            _ => codegen_error!("singlepass can't emit CALL LOC {:?}", loc),
+        };
+        dynasm!(self ; jalr x1, X(reg as u8), 0);
         Ok(())
     }
 

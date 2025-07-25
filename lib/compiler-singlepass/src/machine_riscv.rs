@@ -153,13 +153,13 @@ impl Machine for MachineRiscv {
         self.assembler.get_offset()
     }
     fn index_from_gpr(&self, x: Self::GPR) -> RegisterIndex {
-        todo!()
+        RegisterIndex(x as usize)
     }
     fn index_from_simd(&self, x: Self::SIMD) -> RegisterIndex {
         todo!()
     }
     fn get_vmctx_reg(&self) -> Self::GPR {
-        todo!()
+        GPR::S9
     }
     fn pick_gpr(&self) -> Option<Self::GPR> {
         todo!()
@@ -213,7 +213,10 @@ impl Machine for MachineRiscv {
         todo!()
     }
     fn round_stack_adjust(&self, value: usize) -> usize {
-        todo!()
+        match value % 16 {
+            0 => value,
+            rem => value + (16 - rem),
+        }
     }
     fn set_srcloc(&mut self, offset: u32) {
         todo!()
@@ -251,10 +254,22 @@ impl Machine for MachineRiscv {
         todo!()
     }
     fn adjust_stack(&mut self, delta_stack_offset: u32) -> Result<(), CompileError> {
-        todo!()
+        self.assembler.emit_add(
+            Size::S64,
+            GPR::Sp,
+            Location::Imm32(-(delta_stack_offset as i32) as u32),
+            GPR::Sp,
+        );
+        Ok(())
     }
     fn restore_stack(&mut self, delta_stack_offset: u32) -> Result<(), CompileError> {
-        todo!()
+        self.assembler.emit_add(
+            Size::S64,
+            GPR::Sp,
+            Location::Imm32(delta_stack_offset),
+            GPR::Sp,
+        );
+        Ok(())
     }
     fn pop_stack_locals(&mut self, delta_stack_offset: u32) -> Result<(), CompileError> {
         todo!()
@@ -263,7 +278,7 @@ impl Machine for MachineRiscv {
         todo!()
     }
     fn local_pointer(&self) -> Self::GPR {
-        todo!()
+        GPR::Fp
     }
     fn move_location_for_native(
         &mut self,
@@ -273,17 +288,38 @@ impl Machine for MachineRiscv {
     ) -> Result<(), CompileError> {
         todo!()
     }
+
+    // Determine whether a local should be allocated on the stack.
     fn is_local_on_stack(&self, idx: usize) -> bool {
-        todo!()
+        idx > 8
     }
+
+    // Determine a local's location.
     fn get_local_location(&self, idx: usize, callee_saved_regs_size: usize) -> Location {
-        todo!()
+        // Use callee-saved registers for the first locals.
+        match idx {
+            0 => Location::GPR(GPR::S1),
+            1 => Location::GPR(GPR::S2),
+            2 => Location::GPR(GPR::S3),
+            3 => Location::GPR(GPR::S4),
+            4 => Location::GPR(GPR::S5),
+            5 => Location::GPR(GPR::S6),
+            6 => Location::GPR(GPR::S7),
+            7 => Location::GPR(GPR::S8),
+            _ => Location::Memory(GPR::Fp, -(((idx - 7) * 8 + callee_saved_regs_size) as i32)),
+        }
     }
+
     fn move_local(&mut self, stack_offset: i32, location: Location) -> Result<(), CompileError> {
-        todo!()
+        self.assembler.emit_mov(
+            Size::S64,
+            location,
+            Location::Memory(GPR::Sp, -stack_offset),
+        )?;
+        Ok(())
     }
-    fn list_to_save(&self, calling_convention: CallingConvention) -> Vec<Location> {
-        todo!()
+    fn list_to_save(&self, _calling_convention: CallingConvention) -> Vec<Location> {
+        vec![]
     }
     fn get_param_location(
         &self,
@@ -297,11 +333,11 @@ impl Machine for MachineRiscv {
     fn get_call_param_location(
         &self,
         idx: usize,
-        sz: Size,
-        stack_offset: &mut usize,
+        _sz: Size,
+        _stack_offset: &mut usize,
         calling_convention: CallingConvention,
     ) -> Location {
-        todo!()
+        self.get_simple_param_location(idx, calling_convention)
     }
     // TODO: Floats go in float registers
     fn get_simple_param_location(
@@ -364,10 +400,6 @@ impl Machine for MachineRiscv {
         new_machine_state()
     }
     fn assembler_finalize(mut self) -> Result<Vec<u8>, CompileError> {
-        self.assembler
-            .emit_add(Size::S32, GPR::A1, Location::GPR(GPR::A2), GPR::A0)?;
-        self.assembler.emit_ret()?;
-
         self.assembler.finalize().map_err(|e| {
             CompileError::Codegen(format!("Assembler failed finalization with: {e:?}"))
         })
@@ -377,13 +409,42 @@ impl Machine for MachineRiscv {
     }
     fn finalize_function(&mut self) -> Result<(), CompileError> {
         //todo!()
+
+        self.assembler
+            .emit_add(Size::S32, GPR::A1, Location::GPR(GPR::A2), GPR::A0)?;
+
+        self.assembler.emit_ret()?;
+
         Ok(())
     }
     fn emit_function_prolog(&mut self) -> Result<(), CompileError> {
-        todo!()
+        // Fp to Mem and Sp to Fp
+        // TODO: This is wasteful by 8 bytes per frame
+        self.assembler
+            .emit_add(Size::S64, GPR::Sp, Location::Imm32(-16i32 as u32), GPR::Sp)?;
+        self.assembler.emit_mov(
+            Size::S64,
+            Location::GPR(GPR::Fp),
+            Location::Memory(GPR::Sp, 0),
+        );
+        self.assembler
+            .emit_mov(Size::S64, Location::GPR(GPR::Sp), Location::GPR(GPR::Fp));
+
+        Ok(())
     }
     fn emit_function_epilog(&mut self) -> Result<(), CompileError> {
-        todo!()
+        // Fp to Sp and Mem to Fp
+        self.assembler
+            .emit_mov(Size::S64, Location::GPR(GPR::Fp), Location::GPR(GPR::Sp));
+        self.assembler.emit_mov(
+            Size::S64,
+            Location::Memory(GPR::Sp, 0),
+            Location::GPR(GPR::Fp),
+        );
+        self.assembler
+            .emit_add(Size::S64, GPR::Sp, Location::Imm32(16), GPR::Sp)?;
+
+        Ok(())
     }
     fn emit_function_return_value(
         &mut self,
@@ -2595,22 +2656,17 @@ impl Machine for MachineRiscv {
             self.get_simple_param_location(2, calling_convention),
             Location::GPR(GPR::S1),
         )?;
-
         // `callee_vmctx` is already in the first argument register, so no need to move.
-        {
-            let mut n_stack_args: usize = 0;
-            for (i, _param) in sig.params().iter().enumerate() {
-                let src_loc = Location::Memory(GPR::S1, (i * 16) as _); // args_rets[i]
-                let dst_loc = self.get_simple_param_location(1 + i, calling_convention);
+        for (i, _param) in sig.params().iter().enumerate() {
+            let src_loc = Location::Memory(GPR::S1, (i * 16) as _); // args_rets[i]
+            let dst_loc = self.get_simple_param_location(1 + i, calling_convention);
 
-                a.emit_mov(Size::S64, src_loc, dst_loc)?;
-            }
+            a.emit_mov(Size::S64, src_loc, dst_loc)?;
         }
 
         // Call
         //a.emit_break();
-        a.emit_call_location(GPR::T0)?;
-        //a.emit_add(Size::S64, GPR::A1, Location::GPR(GPR::A2), GPR::A0)?;
+        a.emit_call_location(Location::GPR(GPR::T0))?;
 
         // Restore stack
         a.emit_add(Size::S64, GPR::Sp, Location::Imm32(stack_offset), GPR::Sp)?;

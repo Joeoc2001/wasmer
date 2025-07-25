@@ -173,7 +173,7 @@ impl CombinedRegister for RiscvRegister {
     fn to_index(&self) -> RegisterIndex {
         match *self {
             RiscvRegister::GPR(x) => RegisterIndex(x as usize),
-            RiscvRegister::FPR(x) => RegisterIndex(x as usize + /* FPR offset */ 0),
+            RiscvRegister::FPR(x) => RegisterIndex(x as usize + 32),
         }
     }
     fn from_gpr(x: u16) -> Self {
@@ -210,7 +210,7 @@ impl ArgumentRegisterAllocator {
 pub fn new_machine_state() -> MachineState {
     MachineState {
         stack_values: vec![],
-        register_values: vec![MachineValue::Undefined; /* GPR+FPR count */ 0],
+        register_values: vec![MachineValue::Undefined; 64],
         prev_frame: BTreeMap::new(),
         wasm_stack: vec![],
         wasm_inst_offset: usize::MAX,
