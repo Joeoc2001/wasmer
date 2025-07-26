@@ -41,9 +41,6 @@ pub trait EmitterRiscv {
     /// Returns the size of a jump instruction in bytes.
     fn get_jmp_instr_size(&self) -> u8;
 
-    /// Finalize the function, e.g., resolve labels.
-    fn finalize_function(&mut self) -> Result<(), CompileError>;
-
     // TODO: add methods for emitting RISC-V instructions (e.g., loads, stores, arithmetic, branches, etc.)*/
 
     /// Generates a new internal label.
@@ -64,6 +61,9 @@ pub trait EmitterRiscv {
     fn emit_movsx(&mut self, sz: Size, src: Location, dst: Location) -> Result<(), CompileError>;
     fn emit_call_location(&mut self, loc: Location) -> Result<(), CompileError>;
     fn emit_break(&mut self) -> Result<(), CompileError>;
+
+    /// Finalize the function, e.g., resolve labels.
+    fn finalize_function(&mut self) -> Result<(), CompileError>;
 }
 
 impl AssemblerRiscv {
@@ -191,7 +191,7 @@ impl EmitterRiscv for AssemblerRiscv {
                 self.emit_addi(sz, src, imm as i64, r_dest)?
             }
             // GPR + GPR
-            (Location::GPR(lhs), Location::GPR(rhs)) => {}
+            (Location::GPR(lhs), Location::GPR(rhs)) => self.emit_add(sz, lhs, rhs, r_dest)?,
             // Mem + Imm
             (Location::Imm32(imm), Location::Memory(mem, offset))
             | (Location::Memory(mem, offset), Location::Imm32(imm)) => {
@@ -247,7 +247,7 @@ impl EmitterRiscv for AssemblerRiscv {
             match (sz, src, dst) {
                 // GPR -> GPR
                 (Size::S32, Location::GPR(src), Location::GPR(dst)) => {
-                    dynasm!(a ; li X(GPR::T6 as u8), 0xFFFFFFFFi64);
+                    dynasm!(a ; ld X(GPR::T6 as u8), >const_u32_max);
                     dynasm!(a ; and X(dst as u8), X(src as u8), X(GPR::T6 as u8));
                 }
                 (Size::S64, Location::GPR(src), Location::GPR(dst)) => {
@@ -368,6 +368,16 @@ impl EmitterRiscv for AssemblerRiscv {
 
     fn emit_break(&mut self) -> Result<(), CompileError> {
         dynasm!(self ; ebreak);
+        Ok(())
+    }
+
+    fn finalize_function(&mut self) -> Result<(), CompileError> {
+        dynasm!(
+            self
+            ; const_u32_max:
+            ; .i64 0xFFFFFFFFi64
+        );
+
         Ok(())
     }
 }

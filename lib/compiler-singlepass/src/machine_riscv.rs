@@ -172,7 +172,7 @@ impl Machine for MachineRiscv {
         GPR::S1
     }
     fn pick_gpr(&self) -> Option<Self::GPR> {
-        static REGS: &[GPR] = &[GPR::S6, GPR::S7, GPR::S8, GPR::S9, GPR::S10, GPR::S11];
+        static REGS: &[GPR] = &[GPR::T2, GPR::T3, GPR::T4];
         for r in REGS {
             if !self.used_gprs_contains(r) {
                 return Some(*r);
@@ -181,7 +181,7 @@ impl Machine for MachineRiscv {
         None
     }
     fn pick_temp_gpr(&self) -> Option<GPR> {
-        static REGS: &[GPR] = &[GPR::T0, GPR::T1, GPR::T2, GPR::T3, GPR::T4];
+        static REGS: &[GPR] = &[GPR::T0, GPR::T1];
         for r in REGS {
             if !self.used_gprs_contains(r) {
                 return Some(*r);
@@ -351,7 +351,7 @@ impl Machine for MachineRiscv {
         self.assembler.emit_movzx(
             Size::S64,
             location,
-            Location::Memory(GPR::Sp, -stack_offset),
+            Location::Memory(GPR::Fp, -stack_offset),
         )?;
         Ok(())
     }
@@ -479,8 +479,8 @@ impl Machine for MachineRiscv {
             .emit_movzx(Size::S64, Location::Memory(GPR::Sp, 0), location)?;
         self.assembler.emit_add(
             Size::S64,
-            Location::GPR(GPR::Fp),
-            Location::Imm32(16),
+            Location::GPR(GPR::Sp),
+            Location::Imm32(8),
             Location::GPR(GPR::Sp),
         )?;
 
@@ -489,7 +489,7 @@ impl Machine for MachineRiscv {
     fn new_machine_state(&self) -> MachineState {
         new_machine_state()
     }
-    fn assembler_finalize(mut self) -> Result<Vec<u8>, CompileError> {
+    fn assembler_finalize(self) -> Result<Vec<u8>, CompileError> {
         self.assembler.finalize().map_err(|e| {
             CompileError::Codegen(format!("Assembler failed finalization with: {e:?}"))
         })
@@ -498,10 +498,7 @@ impl Machine for MachineRiscv {
         todo!()
     }
     fn finalize_function(&mut self) -> Result<(), CompileError> {
-        //self.assembler
-        //    .emit_add(Size::S32, GPR::A1, Location::GPR(GPR::A2), GPR::A0)?;
-
-        //self.assembler.emit_ret()?;
+        self.assembler.finalize_function()?;
 
         Ok(())
     }
@@ -517,26 +514,26 @@ impl Machine for MachineRiscv {
             Size::S64,
             Location::GPR(GPR::Fp),
             Location::Memory(GPR::Sp, 0),
-        );
+        )?;
         self.assembler.emit_movzx(
             Size::S64,
             Location::GPR(GPR::Ra),
             Location::Memory(GPR::Sp, 8),
         )?;
         self.assembler
-            .emit_movzx(Size::S64, Location::GPR(GPR::Sp), Location::GPR(GPR::Fp));
+            .emit_movzx(Size::S64, Location::GPR(GPR::Sp), Location::GPR(GPR::Fp))?;
 
         Ok(())
     }
     fn emit_function_epilog(&mut self) -> Result<(), CompileError> {
         // Fp->Sp, Mem->Fp, Mem->Ra
         self.assembler
-            .emit_movzx(Size::S64, Location::GPR(GPR::Fp), Location::GPR(GPR::Sp));
+            .emit_movzx(Size::S64, Location::GPR(GPR::Fp), Location::GPR(GPR::Sp))?;
         self.assembler.emit_movzx(
             Size::S64,
             Location::Memory(GPR::Sp, 0),
             Location::GPR(GPR::Fp),
-        );
+        )?;
         self.assembler.emit_movzx(
             Size::S64,
             Location::Memory(GPR::Sp, 8),
@@ -623,7 +620,7 @@ impl Machine for MachineRiscv {
         todo!()
     }
     fn emit_debug_breakpoint(&mut self) -> Result<(), CompileError> {
-        todo!()
+        self.assembler.emit_break()
     }
     fn location_address(
         &mut self,
