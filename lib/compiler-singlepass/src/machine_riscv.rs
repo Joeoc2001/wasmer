@@ -300,8 +300,7 @@ impl Machine for MachineRiscv {
             Location::GPR(GPR::Sp),
             Location::Imm32(-(delta_stack_offset as i32) as u32),
             Location::GPR(GPR::Sp),
-        );
-        Ok(())
+        )
     }
     fn restore_stack(&mut self, delta_stack_offset: u32) -> Result<(), CompileError> {
         self.assembler.emit_add(
@@ -309,8 +308,7 @@ impl Machine for MachineRiscv {
             Location::GPR(GPR::Sp),
             Location::Imm32(delta_stack_offset),
             Location::GPR(GPR::Sp),
-        );
-        Ok(())
+        )
     }
     fn pop_stack_locals(&mut self, delta_stack_offset: u32) -> Result<(), CompileError> {
         todo!()
@@ -343,7 +341,12 @@ impl Machine for MachineRiscv {
             1 => Location::GPR(GPR::S3),
             2 => Location::GPR(GPR::S4),
             3 => Location::GPR(GPR::S5),
-            _ => Location::Memory(GPR::Fp, -(((idx - 3) * 8 + callee_saved_regs_size) as i32)),
+            4 => Location::GPR(GPR::S6),
+            5 => Location::GPR(GPR::S7),
+            6 => Location::GPR(GPR::S8),
+            7 => Location::GPR(GPR::S9),
+            8 => Location::GPR(GPR::S10),
+            _ => Location::Memory(GPR::Fp, -(((idx - 8) * 8 + callee_saved_regs_size) as i32)),
         }
     }
 
